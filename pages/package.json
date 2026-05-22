@@ -9,7 +9,7 @@
     "preview": "vite preview --host --port 4173"
   },
   "dependencies": {
-    "@heroui/react": "2.8.5",
+    "@heroui/react": "2.8.10",
     "@iconify/react": "6.0.2",
     "@react-aria/ssr": "3.9.10",
     "@react-aria/visually-hidden": "3.8.28",

@@ -21,6 +21,8 @@ import {
   NumberInput,
   Switch,
   CheckboxGroup,
+  Select,
+  SelectItem,
 } from "@heroui/react";
 import clsx from "clsx";
 
@@ -33,10 +35,12 @@ import { copyText } from "@/lib/utils";
 import XModal from "@/components/modal";
 import BillCheckbox from "@/components/bill-checkbox";
 
-const PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 20, 30, 50] as const;
 const SHARE_PASSWORD_MIN = 4;
 const SHARE_PASSWORD_MAX = 32;
 type ShareDurationUnit = "minutes" | "hours" | "days";
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 
 function buildExpireDateTime(
   duration: number,
@@ -87,6 +91,7 @@ export default function GalleryGrid() {
   const [tagSelected, setTagSelected] = useState<string[]>([]);
   const [items, setItems] = useState<GalleryItem[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,8 +134,8 @@ export default function GalleryGrid() {
   const totalPages = useMemo(() => {
     if (total <= 0) return 1;
 
-    return Math.max(1, Math.ceil(total / PAGE_SIZE));
-  }, [total]);
+    return Math.max(1, Math.ceil(total / pageSize));
+  }, [pageSize, total]);
 
   const fetchTags = useCallback(async () => {
     try {
@@ -145,11 +150,15 @@ export default function GalleryGrid() {
   }, []);
 
   const fetchData = useCallback(
-    async (targetPage: number, selectedTags: string[] = tagSelected) => {
+    async (
+      targetPage: number,
+      selectedTags: string[] = tagSelected,
+      selectedPageSize: PageSize = pageSize,
+    ) => {
       const nextPage = Math.max(1, targetPage);
       const params = new URLSearchParams({
         page: String(nextPage),
-        size: String(PAGE_SIZE),
+        size: String(selectedPageSize),
       });
       if (selectedTags.length > 0) {
         params.set("tags", selectedTags.join(","));
@@ -162,7 +171,9 @@ export default function GalleryGrid() {
           `/gallery?${params.toString()}`,
         );
         const maxPage =
-          res.total > 0 ? Math.max(1, Math.ceil(res.total / PAGE_SIZE)) : 1;
+          res.total > 0
+            ? Math.max(1, Math.ceil(res.total / selectedPageSize))
+            : 1;
         const safePage = Math.min(res.page, maxPage);
 
         if (safePage !== page) {
@@ -180,7 +191,7 @@ export default function GalleryGrid() {
         setLoading(false);
       }
     },
-    [page, tagSelected],
+    [page, pageSize, tagSelected],
   );
 
   useEffect(() => {
@@ -188,12 +199,21 @@ export default function GalleryGrid() {
   }, [fetchTags]);
 
   useEffect(() => {
-    fetchData(page, tagSelected);
-  }, [fetchData, page, tagSelected]);
+    fetchData(page, tagSelected, pageSize);
+  }, [fetchData, page, pageSize, tagSelected]);
 
   const handleTagChange = useCallback((values: string[]) => {
     setTagSelected(values);
     setPage(1);
+  }, []);
+
+  const handlePageSizeChange = useCallback((key?: string | null) => {
+    const nextPageSize = Number(key);
+
+    if (PAGE_SIZE_OPTIONS.includes(nextPageSize as PageSize)) {
+      setPageSize(nextPageSize as PageSize);
+      setPage(1);
+    }
   }, []);
 
   const handleCopy = useCallback(async (url: string) => {
@@ -413,6 +433,25 @@ export default function GalleryGrid() {
           <span>
             第 {Math.min(page, totalPages)} / {totalPages} 页
           </span>
+          <div className="flex items-center gap-2">
+            <span className="whitespace-nowrap">每页</span>
+            <Select
+              aria-label="每页数量"
+              className="w-24"
+              isDisabled={loading}
+              selectedKeys={new Set([String(pageSize)])}
+              size="sm"
+              onSelectionChange={(keys: any) =>
+                handlePageSizeChange(keys.currentKey)
+              }
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <SelectItem key={String(size)} textValue={`${size} 条`}>
+                  {size} 条
+                </SelectItem>
+              ))}
+            </Select>
+          </div>
           <Button
             isLoading={loading}
             color="primary"
@@ -463,10 +502,10 @@ export default function GalleryGrid() {
         isOpen={Boolean(deleteTarget)}
         placement="center"
         size="md"
-        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onOpenChange={(open: boolean) => !open && setDeleteTarget(null)}
       >
         <ModalContent>
-          {(close) =>
+          {(close: () => void) =>
             deleteTarget ? (
               <>
                 <ModalHeader className="flex flex-col gap-1">
@@ -511,7 +550,7 @@ export default function GalleryGrid() {
         isOpen={Boolean(preview)}
         placement="center"
         size="4xl"
-        onOpenChange={(open) => !open && setPreview(null)}
+        onOpenChange={(open: boolean) => !open && setPreview(null)}
         header={<>
           <span className="text-lg font-semibold text-default-900 dark:text-default-50">
             预览
@@ -574,7 +613,7 @@ export default function GalleryGrid() {
         </>}
         submitText={shareResult ? "复制" : "创建分享"}
         onSubmit={submitShare}
-        onOpenChange={(open) => !open && setShare(null)}
+        onOpenChange={(open: boolean) => !open && setShare(null)}
       >
         <Input
           autoFocus
@@ -602,7 +641,7 @@ export default function GalleryGrid() {
         />
         <NumberInput
           value={shareDuration}
-          onValueChange={(val) => {
+          onValueChange={(val: number) => {
             setShareDuration(val);
             setShareExpireTime(buildExpireDateTime(val, shareDurationUnit));
           }}
