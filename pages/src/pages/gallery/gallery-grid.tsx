@@ -86,6 +86,14 @@ function buidlPwd(length: number = 4): string {
   return pwd;
 }
 
+function deleteGalleryItems(ids: number[]) {
+  return Promise.all(
+    ids.map((id) =>
+      api.post<GalleryDeleteResponse>("/gallery/delete", { id }),
+    ),
+  );
+}
+
 export default function GalleryGrid() {
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [tagSelected, setTagSelected] = useState<string[]>([]);
@@ -106,8 +114,12 @@ export default function GalleryGrid() {
     useState<ShareDurationUnit>("days");
   const [shareRelay, setShareRelay] = useState(false);
 
-  const [deleteTarget, setDeleteTarget] = useState<GalleryItem | null>(null);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [bathDeleteMode, setBathDeleteMode] = useState(false);
+  const [batchDeleteIds, setBatchDeleteIds] = useState<number[]>([]);
+  const [deleteConfirmItems, setDeleteConfirmItems] = useState<GalleryItem[]>(
+    [],
+  );
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const [shareSubmitting, setShareSubmitting] = useState(false);
   const [shareResult, setShareResult] = useState<{
     url: string;
@@ -130,6 +142,13 @@ export default function GalleryGrid() {
       setShareRelay(false);
     }
   }, [share]);
+
+  useEffect(() => {
+    if (!bathDeleteMode) {
+      setBatchDeleteIds([]);
+      setDeleteConfirmItems([]);
+    }
+  }, [bathDeleteMode]);
 
   const totalPages = useMemo(() => {
     if (total <= 0) return 1;
@@ -237,44 +256,69 @@ export default function GalleryGrid() {
     }
   }, []);
 
-  const handleDelete = useCallback(
-    async (item: GalleryItem) => {
-      if (deletingId === item.id) return false;
-
-      setDeletingId(item.id);
-      try {
-        await api.post<GalleryDeleteResponse>("/gallery/delete", {
-          id: item.id,
-        });
-        addToast({
-          title: "删除成功",
-          description: item.filename,
-          color: "success",
-          variant: "flat",
-        });
-        if (preview?.id === item.id) {
-          setPreview(null);
-        }
-        await fetchData(page);
-        return true;
-      } catch (err: any) {
-        return false;
-      } finally {
-        setDeletingId(null);
-      }
-    },
-    [deletingId, fetchData, page, preview],
-  );
-
   const confirmDelete = useCallback(async () => {
-    if (!deleteTarget) return;
+    if (deleteConfirmItems.length === 0 || deleteSubmitting) return;
 
-    const ok = await handleDelete(deleteTarget);
+    const deletingItems = deleteConfirmItems;
+    const deletingIds = deletingItems.map((item) => item.id);
+    const isBatchDelete = deletingItems.length > 1;
 
-    if (ok) {
-      setDeleteTarget(null);
+    setDeleteSubmitting(true);
+    try {
+      await deleteGalleryItems(deletingIds);
+      addToast({
+        title: isBatchDelete ? "批量删除成功" : "删除成功",
+        description: isBatchDelete
+          ? `已删除 ${deletingItems.length} 个资源`
+          : deletingItems[0]?.filename,
+        color: "success",
+        variant: "flat",
+      });
+      setDeleteConfirmItems([]);
+      setBatchDeleteIds([]);
+      if (isBatchDelete) {
+        setBathDeleteMode(false);
+      }
+      if (preview && deletingIds.includes(preview.id)) {
+        setPreview(null);
+      }
+      await fetchData(page);
+    } catch (err) {
+      console.log(err);
+      addToast({
+        title: isBatchDelete ? "批量删除失败" : "删除失败",
+        description: isBatchDelete
+          ? "部分资源可能已删除，请刷新后确认"
+          : "请稍后重试",
+        color: "danger",
+        variant: "flat",
+      });
+      await fetchData(page);
+    } finally {
+      setDeleteSubmitting(false);
     }
-  }, [deleteTarget, handleDelete]);
+  }, [deleteConfirmItems, deleteSubmitting, fetchData, page, preview]);
+
+  const toggleBatchDeleteItem = useCallback((item: GalleryItem) => {
+    setBatchDeleteIds((prev) => {
+      if (prev.includes(item.id)) {
+        return prev.filter((id) => id !== item.id);
+      }
+
+      return [...prev, item.id];
+    });
+  }, []);
+
+  const selectedDeleteCount = batchDeleteIds.length;
+  const deleteConfirmCount = deleteConfirmItems.length;
+
+  const openBatchDeleteConfirm = useCallback(() => {
+    if (selectedDeleteCount === 0 || deleteSubmitting) return;
+
+    setDeleteConfirmItems(
+      items.filter((item) => batchDeleteIds.includes(item.id)),
+    );
+  }, [batchDeleteIds, deleteSubmitting, items, selectedDeleteCount]);
 
   const gotoPrev = useCallback(() => {
     setPage((prev) => Math.max(1, prev - 1));
@@ -336,7 +380,11 @@ export default function GalleryGrid() {
     }
   }, [fetchData, origin, page, share, shareRelay, shareResult, sharePassword, shareSubmitting]);
 
-  const isDeleting = Boolean(deleteTarget && deletingId === deleteTarget.id);
+  const deletingIdSet = useMemo(() => {
+    if (!deleteSubmitting) return new Set<number>();
+
+    return new Set(deleteConfirmItems.map((item) => item.id));
+  }, [deleteConfirmItems, deleteSubmitting]);
 
   const renderContent = () => {
     if (loading && items.length === 0) {
@@ -376,36 +424,51 @@ export default function GalleryGrid() {
 
     return (
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className="cursor-pointer focus:outline-none"
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              if (!item.shareCode) {
-                addToast({
-                  title: "无法预览",
-                  description: "该资源缺少分享短链，无法打开预览",
-                  color: "warning",
-                  variant: "flat",
-                });
+        {items.map((item) => {
+          const isBatchSelected = batchDeleteIds.includes(item.id);
 
-                return;
-              }
-              setPreview(item);
-            }}
-          >
-            <GalleryCard
-              deleting={deletingId === item.id}
-              item={item}
-              origin={origin}
-              onCopyLink={handleCopy}
-              onDelete={(target) => setDeleteTarget(target)}
-              onShare={() => setShare(item)}
-            />
-          </div>
-        ))}
+          return (
+            <div
+              key={item.id}
+              className={clsx(
+                "cursor-pointer rounded-2xl border-2 border-transparent focus:outline-none",
+                bathDeleteMode && "transition",
+                isBatchSelected &&
+                  "border-primary shadow-[0_0_0_3px_rgba(0,111,238,0.18)]",
+              )}
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                if (bathDeleteMode) {
+                  toggleBatchDeleteItem(item);
+
+                  return;
+                }
+
+                if (!item.shareCode) {
+                  addToast({
+                    title: "无法预览",
+                    description: "该资源缺少分享短链，无法打开预览",
+                    color: "warning",
+                    variant: "flat",
+                  });
+
+                  return;
+                }
+                setPreview(item);
+              }}
+            >
+              <GalleryCard
+                deleting={deletingIdSet.has(item.id)}
+                item={item}
+                origin={origin}
+                onCopyLink={handleCopy}
+                onDelete={(target) => setDeleteConfirmItems([target])}
+                onShare={() => setShare(item)}
+              />
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -419,7 +482,7 @@ export default function GalleryGrid() {
             label=""
             orientation="horizontal"
             value={tagSelected}
-            onChange={(values) => handleTagChange([...values])}
+            onChange={(values: any) => handleTagChange([...values])}
           >
             {availableTags.map((tag) => (
               <BillCheckbox key={tag} value={tag}>
@@ -429,41 +492,66 @@ export default function GalleryGrid() {
           </CheckboxGroup>
         </div>
         <div className="flex items-center gap-3 text-sm text-default-500">
-          <span>共 {total} 个</span>
-          <span>
-            第 {Math.min(page, totalPages)} / {totalPages} 页
-          </span>
-          <div className="flex items-center gap-2">
-            <span className="whitespace-nowrap">每页</span>
-            <Select
-              aria-label="每页数量"
-              className="w-24"
-              isDisabled={loading}
-              selectedKeys={new Set([String(pageSize)])}
-              size="sm"
-              onSelectionChange={(keys: any) =>
-                handlePageSizeChange(keys.currentKey)
-              }
-            >
-              {PAGE_SIZE_OPTIONS.map((size) => (
-                <SelectItem key={String(size)} textValue={`${size} 条`}>
-                  {size} 条
-                </SelectItem>
-              ))}
-            </Select>
-          </div>
           <Button
             isLoading={loading}
-            color="primary"
+            color="danger"
+            isDisabled={deleteSubmitting}
             size="sm"
             variant="flat"
             onPress={() => {
-              fetchTags();
-              fetchData(page, tagSelected);
+              setBathDeleteMode((prev) => !prev);
             }}
           >
-            刷新
+            {bathDeleteMode ? "退出批量删除" : "批量删除"}
           </Button>
+          {bathDeleteMode ? (
+            <Button
+              color="danger"
+              isDisabled={selectedDeleteCount === 0 || deleteSubmitting}
+              size="sm"
+              variant="flat"
+              onPress={openBatchDeleteConfirm}
+            >
+              删除 {selectedDeleteCount} 个
+            </Button>
+
+          ) : (<>
+            <span>共 {total} 个</span>
+            <span>
+              第 {Math.min(page, totalPages)} / {totalPages} 页
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="whitespace-nowrap">每页</span>
+              <Select
+                aria-label="每页数量"
+                className="w-22"
+                isDisabled={loading}
+                selectedKeys={new Set([String(pageSize)])}
+                size="sm"
+                onSelectionChange={(keys: any) =>
+                  handlePageSizeChange(keys.currentKey)
+                }
+              >
+                {PAGE_SIZE_OPTIONS.map((size) => (
+                  <SelectItem key={String(size)} textValue={`${size} 条`}>
+                    {size} 条
+                  </SelectItem>
+                ))}
+              </Select>
+            </div>
+            <Button
+              isLoading={loading}
+              color="primary"
+              size="sm"
+              variant="flat"
+              onPress={() => {
+                fetchTags();
+                fetchData(page, tagSelected);
+              }}
+            >
+              刷新
+            </Button>
+          </>)}
         </div>
       </div>
 
@@ -498,15 +586,19 @@ export default function GalleryGrid() {
 
       {/* delete confirm modal */}
       <Modal
-        isDismissable={!isDeleting}
-        isOpen={Boolean(deleteTarget)}
+        isDismissable={!deleteSubmitting}
+        isOpen={deleteConfirmCount > 0}
         placement="center"
         size="md"
-        onOpenChange={(open: boolean) => !open && setDeleteTarget(null)}
+        onOpenChange={(open: boolean) => {
+          if (!open && !deleteSubmitting) {
+            setDeleteConfirmItems([]);
+          }
+        }}
       >
         <ModalContent>
           {(close: () => void) =>
-            deleteTarget ? (
+            deleteConfirmCount > 0 ? (
               <>
                 <ModalHeader className="flex flex-col gap-1">
                   <span className="text-lg font-semibold text-default-900 dark:text-default-50">
@@ -518,13 +610,15 @@ export default function GalleryGrid() {
                 </ModalHeader>
                 <ModalBody>
                   <p className="text-sm text-default-600 dark:text-default-400">
-                    将删除资源：{deleteTarget.filename}
+                    {deleteConfirmCount === 1
+                      ? `将删除资源：${deleteConfirmItems[0]?.filename}`
+                      : `将删除选中的 ${deleteConfirmCount} 个资源。`}
                   </p>
                 </ModalBody>
                 <ModalFooter>
                   <Button
                     color="default"
-                    isDisabled={isDeleting}
+                    isDisabled={deleteSubmitting}
                     variant="flat"
                     onPress={close}
                   >
@@ -532,7 +626,7 @@ export default function GalleryGrid() {
                   </Button>
                   <Button
                     color="danger"
-                    isLoading={isDeleting}
+                    isLoading={deleteSubmitting}
                     onPress={confirmDelete}
                   >
                     确认删除
@@ -624,20 +718,20 @@ export default function GalleryGrid() {
           type="text"
           value={sharePassword}
           onValueChange={setSharePassword}
-          // endContent={
-          //   <Button 
-          //     isIconOnly
-          //     color="primary"
-          //     variant="flat"
-          //     isDisabled={shareSubmitting || Boolean(shareResult)}
-          //     onPress={() => {
-          //       if (shareSubmitting || shareResult) return;
-          //       setSharePassword(buidlPwd(6));
-          //     }}
-          //   >
-          //     <Icon width={28} height={28} icon="iconoir:refresh-circle-solid"/>
-          //   </Button>
-          // }
+        // endContent={
+        //   <Button 
+        //     isIconOnly
+        //     color="primary"
+        //     variant="flat"
+        //     isDisabled={shareSubmitting || Boolean(shareResult)}
+        //     onPress={() => {
+        //       if (shareSubmitting || shareResult) return;
+        //       setSharePassword(buidlPwd(6));
+        //     }}
+        //   >
+        //     <Icon width={28} height={28} icon="iconoir:refresh-circle-solid"/>
+        //   </Button>
+        // }
         />
         <NumberInput
           value={shareDuration}
@@ -682,10 +776,10 @@ export default function GalleryGrid() {
           placeholder="0"
           className="max-w-[270px]"
         />
-        <Input label="过期时间" type="text" 
+        <Input label="过期时间" type="text"
           readOnly
           isDisabled={shareSubmitting || Boolean(shareResult)}
-          value={shareExpireTime as unknown as string} 
+          value={shareExpireTime as unknown as string}
           size="sm" variant="underlined" placeholder="请先在上方输入有效期"
         />
         <Switch
